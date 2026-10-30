@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// IMPORTANT: Firestore rules cannot read environment variables.
+// If you change EXPO_PUBLIC_ALLOWED_EMAIL_DOMAIN, change the domain in isOrgMember() too.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Verified Google account whose email is exactly @hbplus.fit (anchored; no subdomains or suffix tricks).
+    function isOrgMember() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email.lower().matches('^[^@]+@hbplus[.]fit$');
+    }
+
+    // Admin role comes from a custom claim set with the Admin SDK, never from client-writable data.
+    function isAdmin() {
+      return isOrgMember() && request.auth.token.admin == true;
+    }
+
+    match /users/{uid} {
+      allow read: if isOrgMember() && (request.auth.uid == uid || isAdmin());
+
+      // First login: users can only create their own profile, as role "user", with their verified email.
+      allow create: if isOrgMember()
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt', 'lastLoginAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email.lower() == request.auth.token.email.lower()
+        && request.resource.data.role == 'user';
+
+      // Later logins: only display fields and lastLoginAt may change. role/email/uid are immutable for clients.
+      allow update: if isOrgMember()
+        && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'photoURL', 'lastLoginAt']);
+
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
